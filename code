@@ -1,0 +1,242 @@
+const int buttonPin = 2;
+const int RLedPin = 9;
+const int GLedPin = 10;
+const int BLedPin = 11;
+
+// ===== 狀態 =====
+// 0 = 正常, 1 = 生氣, 2 = 睡著
+int state = 0;
+int mood = 0;                     
+
+// ===== 按鈕 =====
+int buttonState = 0;
+bool buttonPressed = false;
+
+
+unsigned long lastPetTime = 0;       
+unsigned long lastDecayTime = 0;     
+const long idleTime =5000;          
+const long decayInterval = 1000;     
+const int decayAmount = 5;           
+const int petAmount = 5;           
+
+// ===== 生氣 =====
+unsigned long rapidStart = 0;
+int rapidCount = 0;
+const long rapidWindow = 2000;       // 2 秒內
+const int rapidLimit = 10;            // 按 6 下就生氣
+unsigned long angryUntil = 0;
+const long angryTime = 3000;         
+int angryR = 0;
+
+// ===== 睡著 =====
+unsigned long wakeStart = 0;
+int wakeCount = 0;
+const long wakeWindow = 3000;        // 3 秒內
+const int wakeLimit = 5;             // 連按 5 下才醒
+unsigned long flashUntil = 0;        // 睡著時被按的小回應
+
+// ===== 呼吸燈 =====
+int breathPhase = 0;                 // 0～255
+int breathDirection = 1;
+
+void setup()
+{
+  pinMode(buttonPin, INPUT);
+  pinMode(RLedPin, OUTPUT);
+  pinMode(GLedPin, OUTPUT);
+  pinMode(BLedPin, OUTPUT);
+  Serial.begin(9600);
+  randomSeed(analogRead(A0));
+  lastPetTime = millis();
+}
+
+void loop()
+{
+  checkButton();
+  updateMood();
+  updateLED();
+  delay(10);
+}
+
+
+void checkButton(){
+  buttonState = digitalRead(buttonPin);
+
+  if(buttonState == HIGH && !buttonPressed){
+    buttonPressed = true;
+  }
+  if(buttonState == LOW && buttonPressed){
+    buttonPressed = false;
+    pet();
+  }
+}
+
+// ---------- 被摸的時候 ----------
+void pet(){
+  unsigned long now = millis();
+
+  // 睡著
+  if(state == 2){
+    if(now - wakeStart > wakeWindow){
+      wakeStart = now;
+      wakeCount = 0;
+    }
+    wakeCount = wakeCount + 1;
+    flashUntil = now + 120;         
+    Serial.print("Waking... ");
+    Serial.println(wakeCount);
+
+    if(wakeCount >= wakeLimit){
+      state = 0;
+      mood = 30;
+      lastPetTime = now;
+      wakeCount = 0;
+      Serial.println("Woke up!");
+    }
+    return;
+  }
+
+  // 生氣中：再按只會讓它氣更久
+  if(state == 1){
+    angryUntil = now + angryTime;
+    return;
+  }
+
+  // 正常：檢查是不是狂按
+  if(now - rapidStart > rapidWindow){
+    rapidStart = now;
+    rapidCount = 0;
+  }
+  rapidCount = rapidCount + 1;
+
+  if(rapidCount >= rapidLimit){
+    state = 1;
+    angryUntil = now + angryTime;
+    rapidCount = 0;
+    mood = mood - 15;
+    if(mood < 0) mood = 0;
+    Serial.println("ANGRY!");
+    return;
+  }
+
+  // 溫柔地摸 → 變開心
+  mood = mood + petAmount;
+  if(mood > 100) mood = 100;
+  lastPetTime = now;
+  Serial.print("Mood: ");
+  Serial.println(mood);
+}
+
+// ---------- 心情變化 ----------
+void updateMood(){
+  unsigned long now = millis();
+
+  // 氣消了
+  if(state == 1 && now > angryUntil){
+    state = 0;
+    lastPetTime = now;
+    Serial.println("Calm down");
+  }
+
+  // 被冷落 → 慢慢扣分
+  if(state == 0){
+    if(now - lastPetTime > idleTime && now - lastDecayTime > decayInterval){
+      lastDecayTime = now;
+      mood = mood - decayAmount;
+      Serial.print("Mood: ");
+      Serial.println(mood);
+
+      if(mood <= 0){
+        mood = 0;
+        state = 2;
+        Serial.println("Fell asleep...");
+      }
+    }
+  }
+}
+
+// ---------- 燈光 ----------
+void updateLED(){
+  unsigned long now = millis();
+
+  // ===== 生氣：紅光亂閃 =====
+  if(state == 1){
+    if(now - flickerTimer > 50){
+      flickerTimer = now;
+      if(random(0, 3) == 0){
+        angryR = 255;
+      }
+      else{
+        angryR = random(0, 80);
+      }
+    }
+    setRGBLEDColor(angryR, 0, 0);
+    return;
+  }
+
+  // ===== 睡著：微弱白光，每 2 秒輕輕閃一下 =====
+  if(state == 2){
+    if(now < flashUntil){
+      setRGBLEDColor(80, 80, 80);      // 被按時的小回應
+    }
+    else if(now % 2000 < 150){
+      setRGBLEDColor(30, 30, 30);      // 微弱閃一下
+    }
+    else{
+      setRGBLEDColor(5, 5, 5);         // 幾乎暗掉
+    }
+    return;
+  }
+
+  // ===== 正常：呼吸燈，跟心情連動 =====
+
+  // 1. 顏色：難過（紫）→ 正常（綠）→ 開心（橘），直接切換
+  int r, g, b;
+  if(mood < 45){
+    // 難過：紫色
+    r = 150;
+    g = 0;
+    b = 255;
+  }
+  else if(mood < 80){
+    // 正常：綠色
+    r = 0;
+    g = 200;
+    b = 30;
+  }
+  else{
+    // 開心：黃色
+     r = 255;
+    g = 220;
+    b = 0;
+  }
+  // 2. 呼吸速度：越開心越快
+  int breathSpeed = map(mood, 0, 100, 1, 6);
+  breathPhase = breathPhase + breathDirection * breathSpeed;
+  if(breathPhase >= 255){
+    breathPhase = 255;
+    breathDirection = -1;
+  }
+  if(breathPhase <= 0){
+    breathPhase = 0;
+    breathDirection = 1;
+  }
+
+  // 3. 亮度：越開心越亮
+  int maxBright = map(mood, 0, 100, 60, 255);
+  int minBright = 8;
+  long bright = minBright + (long)(maxBright - minBright) * breathPhase / 255;
+
+  long outR = (long)r * bright / 255;
+  long outG = (long)g * bright / 255;
+  long outB = (long)b * bright / 255;
+
+  setRGBLEDColor(outR, outG, outB);
+}
+
+void setRGBLEDColor(int r, int g, int b){
+  analogWrite(RLedPin, 255 - r);
+  analogWrite(GLedPin, 255 - g);
+  analogWrite(BLedPin, 255 - b);
+} 
